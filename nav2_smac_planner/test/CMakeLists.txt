@@ -1,4 +1,8 @@
 # Test utils
+ament_add_gtest(test_cost_aware_shortcut test_cost_aware_shortcut.cpp)
+ament_target_dependencies(test_cost_aware_shortcut ${dependencies})
+target_link_libraries(test_cost_aware_shortcut ${library_name}_2d)
+
 ament_add_gtest(test_utils
   test_utils.cpp
 )

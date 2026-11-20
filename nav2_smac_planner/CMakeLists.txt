@@ -84,6 +84,7 @@ ament_target_dependencies(${library_name}
 # 2D plugin
 add_library(${library_name}_2d SHARED
   src/smac_planner_2d.cpp
+  src/cost_aware_shortcut.cpp
   src/a_star.cpp
   src/smoother.cpp
   src/collision_checker.cpp

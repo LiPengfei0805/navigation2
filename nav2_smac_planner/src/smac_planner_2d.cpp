@@ -94,6 +94,31 @@ void SmacPlanner2D::configure(
     node, name + ".max_planning_time", rclcpp::ParameterValue(2.0));
   node->get_parameter(name + ".max_planning_time", _max_planning_time);
 
+  // Startup-only LOS postprocessing parameters.
+  auto declare_shortcut = [&](const std::string & key, const rclcpp::ParameterValue & value) {
+      rcl_interfaces::msg::ParameterDescriptor descriptor;
+      descriptor.read_only = true;
+      descriptor.description = "Smac 2D shortcut parameter; restart to change";
+      nav2_util::declare_parameter_if_not_declared(
+        node, name + ".shortcut." + key, value, descriptor);
+    };
+  declare_shortcut("enabled", rclcpp::ParameterValue(false));
+  declare_shortcut("cost_weight", rclcpp::ParameterValue(10.0));
+  declare_shortcut("min_cost_improvement", rclcpp::ParameterValue(0.001));
+  declare_shortcut("resample_spacing", rclcpp::ParameterValue(0.05));
+  declare_shortcut("max_processing_time", rclcpp::ParameterValue(0.2));
+  declare_shortcut("max_candidate_checks", rclcpp::ParameterValue(200));
+  node->get_parameter(name + ".shortcut.enabled", _shortcut_options.enabled);
+  node->get_parameter(name + ".shortcut.cost_weight", _shortcut_options.cost_weight);
+  node->get_parameter(name + ".shortcut.min_cost_improvement",
+      _shortcut_options.min_cost_improvement);
+  node->get_parameter(name + ".shortcut.resample_spacing", _shortcut_options.resample_spacing);
+  node->get_parameter(name + ".shortcut.max_processing_time",
+      _shortcut_options.max_processing_time);
+  node->get_parameter(name + ".shortcut.max_candidate_checks",
+      _shortcut_options.max_candidate_checks);
+  _shortcut = std::make_unique<CostAwareShortcut>(_shortcut_options);
+
   _motion_model = MotionModel::TWOD;
 
   if (_max_on_approach_iterations <= 0) {
@@ -144,6 +169,10 @@ void SmacPlanner2D::configure(
   }
 
   _raw_plan_publisher = node->create_publisher<nav_msgs::msg::Path>("unsmoothed_plan", 1);
+  if (_shortcut_options.enabled) {
+    _pre_shortcut_publisher = node->create_publisher<nav_msgs::msg::Path>(
+      _name + "/pre_shortcut_plan", 1);
+  }
 
   RCLCPP_INFO(
     _logger, "Configured plugin %s of type SmacPlanner2D with "
@@ -159,6 +188,9 @@ void SmacPlanner2D::activate()
     _logger, "Activating plugin %s of type SmacPlanner2D",
     _name.c_str());
   _raw_plan_publisher->on_activate();
+  if (_pre_shortcut_publisher) {
+    _pre_shortcut_publisher->on_activate();
+  }
   if (_costmap_downsampler) {
     _costmap_downsampler->on_activate();
   }
@@ -174,6 +206,9 @@ void SmacPlanner2D::deactivate()
     _logger, "Deactivating plugin %s of type SmacPlanner2D",
     _name.c_str());
   _raw_plan_publisher->on_deactivate();
+  if (_pre_shortcut_publisher) {
+    _pre_shortcut_publisher->on_deactivate();
+  }
   if (_costmap_downsampler) {
     _costmap_downsampler->on_deactivate();
   }
@@ -192,6 +227,8 @@ void SmacPlanner2D::cleanup()
     _name.c_str());
   _a_star.reset();
   _smoother.reset();
+  _shortcut.reset();
+  _pre_shortcut_publisher.reset();
   if (_costmap_downsampler) {
     _costmap_downsampler->on_cleanup();
     _costmap_downsampler.reset();
@@ -274,6 +311,7 @@ nav_msgs::msg::Path SmacPlanner2D::createPlan(
       _raw_plan_publisher->publish(plan);
     }
 
+    applyShortcut(plan, a, cancel_checker);
     return plan;
   }
 
@@ -322,6 +360,9 @@ nav_msgs::msg::Path SmacPlanner2D::createPlan(
   // Smooth plan
   _smoother->smooth(plan, costmap, time_remaining);
 
+  // LOS uses the original-resolution costmap and the existing 2D cell policy.
+  applyShortcut(plan, a, cancel_checker);
+
   // If use_final_approach_orientation=true, interpolate the last pose orientation from the
   // previous pose to set the orientation to the 'final approach' orientation of the robot so
   // it does not rotate.
@@ -348,11 +389,51 @@ nav_msgs::msg::Path SmacPlanner2D::createPlan(
   return plan;
 }
 
+void SmacPlanner2D::applyShortcut(
+  nav_msgs::msg::Path & plan, steady_clock::time_point planning_start,
+  const std::function<bool()> & cancel_checker)
+{
+  if (!_shortcut_options.enabled) {
+    return;
+  }
+  if (_pre_shortcut_publisher && _pre_shortcut_publisher->get_subscription_count() > 0) {
+    _pre_shortcut_publisher->publish(plan);
+  }
+  const auto now = steady_clock::now();
+  const double remaining = _max_planning_time - duration<double>(now - planning_start).count();
+  if (!std::isfinite(remaining) || remaining <= 0.0) {
+    if (cancel_checker && cancel_checker()) {
+      throw nav2_core::PlannerCancelled("Smac shortcut processing canceled");
+    }
+    RCLCPP_DEBUG(_logger, "Shortcut: skipped because the planning budget is exhausted");
+    return;
+  }
+  const auto deadline = now + duration_cast<steady_clock::duration>(
+    duration<double>(std::min(remaining, _shortcut_options.max_processing_time)));
+  const auto result = _shortcut->process(
+    plan, *_costmap, _allow_unknown, cancel_checker, deadline);
+  plan = result.path;
+  RCLCPP_DEBUG(
+    _logger, "Shortcut: checked %d candidates at %d anchors, accepted %d, "
+    "LOS rejected %d, cost rejected %d, cost %.6f -> %.6f, timeout=%s, completed=%s",
+    result.candidate_checks, result.processed_anchors, result.accepted_shortcuts,
+    result.collision_rejections, result.cost_rejections, result.baseline_cost,
+    result.final_cost, result.timed_out ? "true" : "false", result.completed ? "true" : "false");
+}
+
 rcl_interfaces::msg::SetParametersResult
 SmacPlanner2D::dynamicParametersCallback(std::vector<rclcpp::Parameter> parameters)
 {
   rcl_interfaces::msg::SetParametersResult result;
   std::lock_guard<std::mutex> lock_reinit(_mutex);
+
+  for (const auto & parameter : parameters) {
+    if (parameter.get_name().find(_name + ".shortcut.") == 0) {
+      result.successful = false;
+      result.reason = "Shortcut parameters require planner reconfiguration";
+      return result;
+    }
+  }
 
   bool reinit_a_star = false;
   bool reinit_downsampler = false;

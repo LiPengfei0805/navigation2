@@ -211,3 +211,16 @@ As such, it is recommended if you have sparse SLAM maps, gaps or holes in your m
 One interesting thing to note from the second figure is that you see a number of expansions in open space. This is due to travel / heuristic values being so similar, tuning values of the penalty weights can have a decent impact there. The defaults are set as a good middle ground between large open spaces and confined aisles (environment specific tuning could be done to reduce the number of expansions for a specific map, speeding up the planner). The planner actually runs substantially faster the more confined the areas of search / environments are -- but still plenty fast for even wide open areas!
 
 Sometimes visualizing the expansions is very useful to debug potential concerns (why does this goal take longer to compute, why can't I find a path, etc), should you on rare occasion run into an issue. You can enable the publication of the expansions on the `/expansions` topic for SmacHybrid with the parameter `debug_visualizations: True`, beware that it should be used only for debug as it increases a lot the CPU usage.
+# Workspace extension: cost-aware 2D shortcutting
+
+This workspace adds an opt-in `GridBased.shortcut.enabled` postprocessor after
+SmacPlanner2D's existing smoother. It uses per-anchor LOS candidate budgets,
+exact cell-length cost integrals and a reverse refinement pass under the same
+time deadline. Completed improvements survive a later timeout. Original collision
+checking and footprint handling remain unchanged; new LOS edges follow the 2D
+planner's center-cell traversability and unknown-space policy.
+
+It is disabled by default. Parameters are startup-only. See
+`multi_map_nav_ros2/SMAC_SHORTCUT.md` at the workspace root for configuration,
+overlay build instructions and regression tests. The apt plugin does not implement
+these parameters. Actual-map results are in `los_validation/README.md`.

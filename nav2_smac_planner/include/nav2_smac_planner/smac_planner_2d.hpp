@@ -22,6 +22,7 @@
 
 #include "nav2_smac_planner/a_star.hpp"
 #include "nav2_smac_planner/smoother.hpp"
+#include "nav2_smac_planner/cost_aware_shortcut.hpp"
 #include "nav2_smac_planner/utils.hpp"
 #include "nav2_smac_planner/costmap_downsampler.hpp"
 #include "nav_msgs/msg/occupancy_grid.hpp"
@@ -98,9 +99,16 @@ protected:
   rcl_interfaces::msg::SetParametersResult
   dynamicParametersCallback(std::vector<rclcpp::Parameter> parameters);
 
+  void applyShortcut(
+    nav_msgs::msg::Path & plan,
+    std::chrono::steady_clock::time_point planning_start,
+    const std::function<bool()> & cancel_checker);
+
   std::unique_ptr<AStarAlgorithm<Node2D>> _a_star;
   GridCollisionChecker _collision_checker;
   std::unique_ptr<Smoother> _smoother;
+  std::unique_ptr<CostAwareShortcut> _shortcut;
+  ShortcutOptions _shortcut_options;
   nav2_costmap_2d::Costmap2D * _costmap;
   std::unique_ptr<CostmapDownsampler> _costmap_downsampler;
   rclcpp::Clock::SharedPtr _clock;
@@ -110,6 +118,7 @@ protected:
   int _downsampling_factor;
   bool _downsample_costmap;
   rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr _raw_plan_publisher;
+  rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr _pre_shortcut_publisher;
   double _max_planning_time;
   bool _allow_unknown;
   int _max_iterations;

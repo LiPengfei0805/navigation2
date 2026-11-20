@@ -7,6 +7,14 @@
   <img height="300" src="doc/nav2_logo.png" />
 </p>
 
+# optimization
+Add a backend optimization module to straighten out the global path. The effect is as follows:
+<p align="center">
+  <img height="500" src="doc/slop_comparison.png" />
+</p>
+
+
+
 For detailed instructions on how to:
 - [Getting Started](https://docs.nav2.org/getting_started/index.html)
 - [Concepts](https://docs.nav2.org/concepts/index.html)
